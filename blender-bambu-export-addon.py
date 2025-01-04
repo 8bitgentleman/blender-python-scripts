@@ -9,18 +9,16 @@ import bmesh
 bl_info = {
     "name": "Export to Bambu Studio",
     "author": "Your Name",
-    "version": (1, 1),
+    "version": (1, 2),
     "blender": (4, 2, 0),
     "location": "File > Export > Bambu Studio (.stl), Toolbar",
-    "description": "Export selected object as STL and open in Bambu Studio, plus additional utilities",
+    "description": "Export to Bambu Studio with options for merged or separate STLs",
     "category": "Import-Export",
 }
 
-# Function to log messages
 def log(message):
-    print(message)  # This will print to the System Console
+    print(message)
 
-# Function to export STL
 def export_stl(filepath):
     try:
         if not bpy.ops.export_mesh.stl.poll():
@@ -31,23 +29,46 @@ def export_stl(filepath):
         log(f"Error during export: {str(e)}")
         raise
 
-# Function to open file in Bambu Studio
-def open_file_with_bambu_studio(file_path):
+def export_stl_single(obj, filepath):
+    try:
+        # Deselect all objects
+        bpy.ops.object.select_all(action='DESELECT')
+        
+        # Select only the current object
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        
+        # Export only this object
+        bpy.ops.export_mesh.stl(filepath=filepath, use_selection=True)
+        log(f"Successfully exported {obj.name} to {filepath}")
+        
+        # Deselect the object
+        obj.select_set(False)
+    except Exception as e:
+        log(f"Error during export of {obj.name}: {str(e)}")
+        raise
+
+def open_file_with_bambu_studio(file_paths):
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+        
     try:
         app_path = "/Applications/BambuStudio.app"
         if not os.path.exists(app_path):
             raise Exception(f"Bambu Studio not found at {app_path}")
-        subprocess.Popen(["open", "-a", app_path, file_path])
-        log(f"Opened {file_path} in Bambu Studio")
+        
+        # Open all files in Bambu Studio
+        for file_path in file_paths:
+            subprocess.Popen(["open", "-a", app_path, file_path])
+            log(f"Opened {file_path} in Bambu Studio")
     except Exception as e:
-        log(f"Error opening file in Bambu Studio: {str(e)}")
+        log(f"Error opening files in Bambu Studio: {str(e)}")
         raise
 
-# Operator for exporting and opening in Bambu Studio
 class ExportSTLAndOpenBambu(Operator):
     bl_idname = "export.stl_and_open_bambu"
-    bl_label = "Export STL and Open in Bambu Studio"
-
+    bl_label = "Export Merged STL to Bambu"
+    
     def execute(self, context):
         try:
             if not bpy.context.selected_objects:
@@ -64,7 +85,36 @@ class ExportSTLAndOpenBambu(Operator):
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
 
-# Operator for creating build volume representation
+class ExportPartsSTLAndOpenBambu(Operator):
+    bl_idname = "export.parts_stl_and_open_bambu"
+    bl_label = "Export Parts as STL to Bambu"
+
+    def execute(self, context):
+        try:
+            selected_objects = [obj for obj in bpy.context.selected_objects if obj.type == 'MESH']
+            
+            if not selected_objects:
+                raise Exception("No mesh objects selected. Please select objects to export.")
+
+            # Create temporary directory for multiple files
+            temp_dir = tempfile.mkdtemp()
+            export_paths = []
+
+            # Export each selected object separately
+            for obj in selected_objects:
+                file_name = f"{obj.name}.stl"
+                export_path = os.path.join(temp_dir, file_name)
+                export_stl_single(obj, export_path)
+                export_paths.append(export_path)
+
+            # Open all exported files in Bambu Studio
+            open_file_with_bambu_studio(export_paths)
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+
+# [Previous operators remain the same]
 class CreateBuildVolume(Operator):
     bl_idname = "object.create_build_volume"
     bl_label = "Create P1S Build Volume"
@@ -90,7 +140,6 @@ class CreateBuildVolume(Operator):
         self.report({'INFO'}, "P1S Build Volume created")
         return {'FINISHED'}
 
-
 class BakeVertexColors(Operator):
     bl_idname = "object.bake_vertex_colors"
     bl_label = "Bake Vertex Colors"
@@ -111,7 +160,6 @@ class BakeVertexColors(Operator):
                 mesh.vertex_colors.new()
             color_layer = mesh.vertex_colors.active
             
-            # Assign color to all vertices
             for poly in mesh.polygons:
                 for loop_index in poly.loop_indices:
                     color_layer.data[loop_index].color = (*self.color, 1.0)
@@ -124,7 +172,6 @@ class BakeVertexColors(Operator):
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
 
-# Operator for removing vertex colors
 class RemoveVertexColors(Operator):
     bl_idname = "object.remove_vertex_colors"
     bl_label = "Remove Vertex Colors"
@@ -141,7 +188,6 @@ class RemoveVertexColors(Operator):
             self.report({'ERROR'}, "No mesh object selected")
         return {'FINISHED'}
     
-# Panel for the toolbar button
 class BambuStudioPanel(Panel):
     bl_label = "Bambu Studio Tools"
     bl_idname = "OBJECT_PT_bambu_studio"
@@ -151,18 +197,27 @@ class BambuStudioPanel(Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("export.stl_and_open_bambu", text="Export to Bambu")
-        layout.operator("object.create_build_volume", text="Create P1S Build Volume")
-        layout.operator("object.bake_vertex_colors", text="Bake Vertex Colors")
-        layout.operator("object.remove_vertex_colors", text="Remove Vertex Colors")
+        
+        # Export section
+        box = layout.box()
+        box.label(text="Export Options:")
+        box.operator("export.stl_and_open_bambu", text="Export Merged to Bambu")
+        box.operator("export.parts_stl_and_open_bambu", text="Export Parts to Bambu")
+        
+        # Other tools section
+        box = layout.box()
+        box.label(text="Utilities:")
+        box.operator("object.create_build_volume", text="Create P1S Build Volume")
+        box.operator("object.bake_vertex_colors", text="Bake Vertex Colors")
+        box.operator("object.remove_vertex_colors", text="Remove Vertex Colors")
 
-# Function to add menu item
 def menu_func_export(self, context):
     self.layout.operator(ExportSTLAndOpenBambu.bl_idname, text="Bambu Studio (.stl)")
+    self.layout.operator(ExportPartsSTLAndOpenBambu.bl_idname, text="Bambu Studio - Separate Parts (.stl)")
 
-# Register and unregister functions
 def register():
     bpy.utils.register_class(ExportSTLAndOpenBambu)
+    bpy.utils.register_class(ExportPartsSTLAndOpenBambu)
     bpy.utils.register_class(CreateBuildVolume)
     bpy.utils.register_class(BakeVertexColors)
     bpy.utils.register_class(RemoveVertexColors)
@@ -171,6 +226,7 @@ def register():
 
 def unregister():
     bpy.utils.unregister_class(ExportSTLAndOpenBambu)
+    bpy.utils.unregister_class(ExportPartsSTLAndOpenBambu)
     bpy.utils.unregister_class(CreateBuildVolume)
     bpy.utils.unregister_class(BakeVertexColors)
     bpy.utils.unregister_class(RemoveVertexColors)
